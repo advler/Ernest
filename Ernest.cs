@@ -73,27 +73,33 @@ namespace QuantConnect.Algorithm.CSharp
 
                 }
 
+                //if less than 2 days, STD will be 0.
+                if (count < 2)
+                    return;
+
                 decimal[] comb_price_past_window = new decimal[count];
                 for (int i = 0; i < count; i++)
                 {
                     comb_price_past_window[i] = 0;
                 }
 
-                foreach (KeyValuePair<Symbol, IEnumerable<TradeBar>> kv in bdic)
+                for (int i = 0; i < count; i++)
                 {
-                    for (int i = 0; i < count; i++)
+                    int j = 0;
+                    Nullable<DateTime> time = null;
+                    foreach (KeyValuePair<Symbol, IEnumerable<TradeBar>> kv in bdic)
                     {
+                        if (j > 0)
+                        {
+                            if (!time.Equals(kv.Value.ElementAt(i).Time))
+                                return;
+                        }
+                        j++;
+                        time = kv.Value.ElementAt(i).Time;
                         comb_price_past_window[i] = comb_price_past_window[i]
                             + _sd[kv.Key].Weight * kv.Value.ElementAt(i).Close;
                     }
                 }
-
-
-
-
-
-
-
 
                 decimal meanPrice = comb_price_past_window.Average();
                 double sum = comb_price_past_window.Sum(d => Math.Pow((double)(d - meanPrice), 2));
