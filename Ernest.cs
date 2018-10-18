@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using NodaTime;
 
 using QuantConnect.Securities;
 using QuantConnect.Data.Market;
@@ -24,16 +25,18 @@ namespace QuantConnect.Algorithm.CSharp
     public class Ernest : QCAlgorithm
     {
         //const values
-        private const decimal TOTALCASH = 10000;                //总资金
+        private const decimal TOTALCASH = 25000;                //total capital
+        private const int HS = 28;                               //history span
+        private const decimal USHARE = 1000;                     //Share unit
 
         private readonly Dictionary<Symbol, SymbolData> _sd = new Dictionary<Symbol, SymbolData>();
 
         public override void Initialize()
         {
-            SetStartDate(2013, 10, 07);  //Set Start Date
-            SetEndDate(2013, 10, 11);    //Set End Date
+            SetStartDate(2006, 5, 1);  //Set Start Date
+            SetEndDate(2015, 5, 1);    //Set End Date
 
-            //设置总资金
+            //Set up total capital
             SetCash(TOTALCASH);             //Set Strategy Cash
 
             SetBrokerageModel(BrokerageName.InteractiveBrokersBrokerage, AccountType.Margin);
@@ -41,26 +44,95 @@ namespace QuantConnect.Algorithm.CSharp
             //select stocks to be traded.
             stockSelection();
 
+            DateTimeZone TimeZone = DateTimeZoneProviders.Tzdb["America/New_York"];
 
-        }
+            Schedule.On(DateRules.EveryDay(), TimeRules.At(9, 40, TimeZone), () =>
+            {
+                foreach (var val in _sd.Values)
+                {
+                    if (!val.Security.Exchange.DateIsOpen(Time))
+                        return;
+                    else
+                    {
+                        Transactions.CancelOpenOrders(val.Symbol);      //close all open orders at the daily beginning
+                        if (!val.IsReady)
+                            return;
+                    }
+                }
 
-        public override void OnData(Slice data)
-        {
+                Dictionary<Symbol, IEnumerable<TradeBar>> bdic = new Dictionary<Symbol, IEnumerable<TradeBar>>();
+                int count = -1;
+                foreach (var val in _sd.Values)
+                {
+                    IEnumerable<TradeBar> bars = History<TradeBar>(val.Symbol, TimeSpan.FromDays(HS), Resolution.Daily);
+                    //Debug(Time + " " + val.Symbol + " " + bars.Count());
+                    if (bars.Count() != count && count != -1)
+                        return;
+                    count = bars.Count();
+                    bdic.Add(val.Symbol, bars);
 
+                }
+
+                decimal[] comb_price_past_window = new decimal[count];
+                for (int i = 0; i < count; i++)
+                {
+                    comb_price_past_window[i] = 0;
+                }
+
+                foreach (KeyValuePair<Symbol, IEnumerable<TradeBar>> kv in bdic)
+                {
+                    for (int i = 0; i < count; i++)
+                    {
+                        comb_price_past_window[i] = comb_price_past_window[i]
+                            + _sd[kv.Key].Weight * kv.Value.ElementAt(i).Close;
+                    }
+                }
+
+
+
+
+
+
+
+
+                decimal meanPrice = comb_price_past_window.Average();
+                double sum = comb_price_past_window.Sum(d => Math.Pow((double)(d - meanPrice), 2));
+                decimal stdPrice = (decimal)Math.Sqrt(sum / comb_price_past_window.Count());
+                decimal comb_price = 0;
+
+                foreach (var val in _sd.Values)
+                {
+                    comb_price = comb_price + val.Weight * val.Security.Close;
+                }
+                //Debug("Debug: " + Time + ": std: " + stdPrice);
+                decimal h = (comb_price - meanPrice) / stdPrice;
+
+                //update positions
+                foreach (var val in _sd.Values)
+                {
+                    decimal current_position = val.Security.Holdings.Quantity;
+                    //Debug("Debug: Time: " + Time + " Symbol: " + val.Symbol +
+                    //" current_position:" + current_position);
+                    decimal new_position = USHARE * -1 * h * val.Weight;
+                    //Debug("Debug: Time: " + Time + " Symbol: " + val.Symbol +
+                    //" new_position:" + current_position);
+                    MarketOrder(val.Symbol, new_position - current_position);
+                }
+            });
         }
 
         private void stockSelection()
         {
             //Add stock names with corresponding weights
-            Dictionary<string, double> st = new Dictionary<string, double>();
-            st.Add("EWA", 1.198);
-            st.Add("EWA", -0.911);
+            Dictionary<string, decimal> st = new Dictionary<string, decimal>();
+            st.Add("EWA", 1.198M);
+            st.Add("EWC", -0.911M);
 
             _sd.Clear();
 
-            foreach (KeyValuePair<string, double> kv in st)
+            foreach (KeyValuePair<string, decimal> kv in st)
             {
-                Equity eqt = AddEquity(kv.Key, Resolution.Daily, Market.USA);
+                Equity eqt = AddEquity(kv.Key, Resolution.Minute, Market.USA);
                 _sd.Add(eqt.Symbol, new SymbolData(eqt.Symbol, kv.Value, this));
             }
         }
@@ -69,7 +141,7 @@ namespace QuantConnect.Algorithm.CSharp
         {
             public readonly Symbol Symbol;
             public readonly Security Security;
-            public readonly double Weight;
+            public readonly decimal Weight;
 
             public decimal Quantity
             {
@@ -77,13 +149,10 @@ namespace QuantConnect.Algorithm.CSharp
             }
 
             public readonly Identity Close;
-            public decimal Return;
-            public decimal wt;
-            public decimal orders;
 
             private readonly Ernest _algorithm;
 
-            public SymbolData(Symbol symbol, double wt, Ernest algorithm)
+            public SymbolData(Symbol symbol, decimal wt, Ernest algorithm)
             {
                 Symbol = symbol;
                 Security = algorithm.Securities[symbol];
